@@ -1,713 +1,1310 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>
+#else
+#include <unistd.h>
+#include <time.h>
+#endif
 #include "head.h"
 
 /*--------------------ahmed kharbouch 2ap g2 maarif------------------*/
+
+/* ************************** fonctions d'affichage ************************** */
+
+/* vrai si l'entr√©e vient d'un fichier (test automatique) et pas du clavier */
+static int entree_redirigee(void)
+{
+#ifdef _WIN32
+    return !_isatty(_fileno(stdin));
+#else
+    return !isatty(fileno(stdin));
+#endif
+}
+
+/* nombre de caract√®res affich√©s d'une cha√Æne UTF-8 (√© compte pour 1) */
+static int largeur_utf8(const char *s)
+{
+    int n = 0;
+    for(; *s; s++)
+        if(((unsigned char)*s & 0xC0) != 0x80)
+            n++;
+    return n;
+}
+
+static void repeter(const char *motif, int n)
+{
+    while(n-- > 0)
+        fputs(motif, stdout);
+}
+
+/* affiche s sur exactement w colonnes (coupe ou compl√®te), suivi d'un espace */
+static void colonne(const char *s, int w)
+{
+    const unsigned char *p = (const unsigned char *)s;
+    int n = 0;
+    while(*p && n < w)
+    {
+        const unsigned char *q = p + 1;
+        while((*q & 0xC0) == 0x80)
+            q++;
+        fwrite(p, 1, q - p, stdout);
+        p = q;
+        n++;
+    }
+    repeter(" ", w - n + 1);
+}
+
+/* ************************** animations ************************** */
+/* Mettre la variable d'environnement CORONA_SANS_ANIMATION=1 pour les d√©sactiver. */
+static int animations = 1;
+
+/* pause en millisecondes (minuterie haute pr√©cision sous Windows) */
+static void dormir(int ms)
+{
+    fflush(stdout);
+#ifdef _WIN32
+    static HANDLE minuterie = NULL;
+    LARGE_INTEGER d;
+    if(minuterie == NULL)
+        minuterie = CreateWaitableTimerExW(NULL, NULL, 0x00000002 /* HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+    if(minuterie != NULL)
+    {
+        d.QuadPart = -(LONGLONG)ms * 10000;
+        if(SetWaitableTimer(minuterie, &d, 0, NULL, NULL, FALSE))
+        {
+            WaitForSingleObject(minuterie, INFINITE);
+            return;
+        }
+    }
+    Sleep(ms);
+#else
+    struct timespec ts;
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (ms % 1000) * 1000000L;
+    nanosleep(&ts, NULL);
+#endif
+}
+
+static void cacher_curseur(void)  { printf("\033[?25l"); }
+static void montrer_curseur(void) { printf("\033[?25h"); fflush(stdout); }
+
+/* taille visible de la console (colonnes, lignes) */
+static void taille_console(int *w, int *h)
+{
+    *w = 80;
+    *h = 25;
+#ifdef _WIN32
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    if(GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info))
+    {
+        *w = info.srWindow.Right - info.srWindow.Left + 1;
+        *h = info.srWindow.Bottom - info.srWindow.Top + 1;
+    }
+#endif
+}
+
+/* petite pause entre deux lignes : le contenu appara√Æt en cascade */
+void ui_cascade(void)
+{
+    if(animations)
+        dormir(14);
+}
+
+/* active les couleurs et l'UTF-8 dans la console Windows */
+void ui_init(void)
+{
+    const char *sans = getenv("CORONA_SANS_ANIMATION");
+#ifdef _WIN32
+    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode;
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+    if(GetConsoleMode(h, &mode))
+        SetConsoleMode(h, mode | 0x0004); /* ENABLE_VIRTUAL_TERMINAL_PROCESSING */
+    SetConsoleTitleA("Gestion Corona");
+#endif
+    if(sans != NULL && sans[0] != '\0' && sans[0] != '0')
+        animations = 0;
+    atexit(montrer_curseur);
+}
+
+void ui_effacer(void)
+{
+    printf("\033[H\033[2J\033[3J");
+}
+
+/* transition entre deux pages : une bande d√©grad√©e balaie l'√©cran de haut en bas */
+void ui_transition(void)
+{
+    static const char *bande[3] = { "‚ñì", "‚ñí", "‚ñë" };   /* du haut (tra√Æne) vers le bas (front) */
+    static const char *couleur[3] = { BLEU, CYAN, CYAN };
+    int w, h, r, i, k;
+    if(!animations)
+    {
+        ui_effacer();
+        return;
+    }
+    taille_console(&w, &h);
+    if(h > 40)
+        h = 40;
+    w--;                       /* √©vite le retour √† la ligne automatique */
+    cacher_curseur();
+    for(r = 1; r <= h + 3; r += 2)
+    {
+        for(i = 0; i < 3; i++)
+        {
+            int ligne = r - 2 + i;
+            if(ligne < 1 || ligne > h)
+                continue;
+            printf("\033[%d;1H%s", ligne, couleur[i]);
+            for(k = 0; k < w; k++)
+                fputs(bande[i], stdout);
+        }
+        for(i = 3; i <= 4; i++)        /* derri√®re la bande : √©cran vide */
+            if(r - i >= 1 && r - i <= h)
+                printf("\033[%d;1H\033[2K", r - i);
+        printf(RESET);
+        dormir(9);
+    }
+    ui_effacer();
+    montrer_curseur();
+}
+
+/* √©crit les k premiers caract√®res (UTF-8) de s */
+static void ecrire_debut(const char *s, int k)
+{
+    const unsigned char *p = (const unsigned char *)s;
+    while(*p && k > 0)
+    {
+        const unsigned char *q = p + 1;
+        while((*q & 0xC0) == 0x80)
+            q++;
+        fwrite(p, 1, q - p, stdout);
+        p = q;
+        k--;
+    }
+}
+
+/* dessine le cadre du titre sur 3 lignes : largeur w, k caract√®res du titre visibles */
+static void dessiner_cadre(int w, const char *titre, int k)
+{
+    int l = largeur_utf8(titre);
+    int marge = (LARGEUR - w) / 2;
+    int g = (w - 2 - l) / 2;
+    int d = w - 2 - l - g;
+    printf("\r\033[2K ");
+    repeter(" ", marge);
+    printf(CYAN "‚ïî");
+    repeter("‚ïê", w - 2);
+    printf("‚ïó\n\r\033[2K ");
+    repeter(" ", marge);
+    printf("‚ïë" RESET GRAS);
+    if(w - 2 >= l)
+    {
+        repeter(" ", g);
+        ecrire_debut(titre, k);
+        repeter(" ", l - k + d);
+    }
+    else
+        repeter(" ", w - 2);
+    printf(RESET CYAN "‚ïë\n\r\033[2K ");
+    repeter(" ", marge);
+    printf("‚ïö");
+    repeter("‚ïê", w - 2);
+    printf("‚ïù" RESET "\n");
+}
+
+/* grand titre encadr√© et centr√© ; anim√© : le cadre s'ouvre puis le titre s'√©crit */
+void ui_titre(const char *titre)
+{
+    int l = largeur_utf8(titre);
+    int w, k;
+    printf("\n");
+    if(!animations)
+    {
+        dessiner_cadre(LARGEUR, titre, l);
+        return;
+    }
+    cacher_curseur();
+    dessiner_cadre(4, titre, 0);
+    for(w = 4 + 10; w < LARGEUR; w += 10)
+    {
+        dormir(12);
+        printf("\033[3A");
+        dessiner_cadre(w, titre, 0);
+    }
+    for(k = 0; k <= l; k += 2)
+    {
+        dormir(10);
+        printf("\033[3A");
+        dessiner_cadre(LARGEUR, titre, k);
+    }
+    printf("\033[3A");
+    dessiner_cadre(LARGEUR, titre, l);
+    montrer_curseur();
+}
+
+/* petit titre de section avec un trait */
+void ui_section(const char *fmt, ...)
+{
+    char texte[100];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(texte, sizeof texte, fmt, ap);
+    va_end(ap);
+    ui_cascade();
+    printf("\n " GRAS BLEU "%s " RESET GRIS, texte);
+    repeter("‚îÄ", LARGEUR - largeur_utf8(texte) - 1);
+    printf(RESET "\n");
+}
+
+void ui_message(const char *couleur, const char *symbole, const char *fmt, ...)
+{
+    va_list ap;
+    printf("\n  %s%s ", couleur, symbole);
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
+    printf(RESET "\n");
+}
+
+/* invite de saisie ; le texte tap√© s'affiche en jaune */
+void ui_champ(const char *label)
+{
+    printf("  " CYAN "‚Ä∫" RESET " %s : " JAUNE, label);
+}
+
+void ui_invalide(const char *aide)
+{
+    printf(ROUGE "    √ó %s" RESET "\n", aide);
+}
+
+void ui_pause(void)
+{
+    int ch;
+    printf("\n  " GRIS "Appuyez sur Entr√©e pour continuer..." RESET);
+    while((ch = getchar()) != '\n')
+        if(ch == EOF)
+            exit(0);
+}
+
+/* une ligne de menu : num√©ro en couleur + texte */
+void ui_item(int numero, const char *texte)
+{
+    ui_cascade();
+    printf("    " GRAS CYAN "%2d" RESET "  %s\n", numero, texte);
+}
+
+/* libell√© gris align√© pour les fiches */
+static void libelle(const char *l)
+{
+    ui_cascade();
+    printf("   " GRIS);
+    colonne(l, 15);
+    printf(RESET);
+}
+
+static const char *etat_nom(char e)
+{
+    switch(e)
+    {
+    case 'n': return "Normal";
+    case 'c': return "Critique";
+    case 'g': return "Gu√©ri";
+    case 'm': return "D√©c√©d√©";
+    }
+    return "?";
+}
+
+static const char *etat_couleur(char e)
+{
+    switch(e)
+    {
+    case 'n': return VERT;
+    case 'c': return ROUGE;
+    case 'g': return CYAN;
+    }
+    return GRIS;
+}
+
+/* √©tat en couleur sur w colonnes */
+static void etat_colonne(char e, int w)
+{
+    printf("%s", etat_couleur(e));
+    colonne(etat_nom(e), w);
+    printf(RESET);
+}
+
+static void nom_complet(char *dest, size_t taille, const char *nom, const char *prenom)
+{
+    snprintf(dest, taille, "%s %s", nom, prenom);
+}
+
+/* ************************** fonctions de saisie ************************** */
+/* Elles remplacent fflush(stdin) / rewind(stdin), qui ne sont pas du C standard,
+   et √©vitent les d√©bordements de tableaux et les boucles infinies. */
+
+/* jette le reste de la ligne tap√©e par l'utilisateur */
+void vider_buffer(void)
+{
+    int ch;
+    while((ch = getchar()) != '\n' && ch != EOF);
+}
+
+/* lit une ligne (espaces autoris√©s) sans d√©passer la taille du tableau */
+void lire_chaine(char *s, int taille)
+{
+    size_t n;
+    for(;;)
+    {
+        if(fgets(s, taille, stdin) == NULL)
+        {
+            printf(RESET "\n");
+            exit(0);
+        }
+        n = strlen(s);
+        if(n > 0 && s[n-1] == '\n')
+            s[--n] = '\0';
+        else
+            vider_buffer();          /* saisie trop longue : on coupe */
+        while(n > 0 && (s[n-1] == '\r' || s[n-1] == ' ' || s[n-1] == '\t'))
+            s[--n] = '\0';         /* espaces en fin de saisie */
+        if(n > 0 && (s[0] == ' ' || s[0] == '\t'))
+        {
+            size_t d = strspn(s, " \t");   /* espaces en d√©but de saisie */
+            memmove(s, s + d, n - d + 1);
+            n -= d;
+        }
+        if(n > 0)
+            break;
+        if(entree_redirigee())
+            printf("\n");
+        printf(ROUGE "    √ó champ obligatoire, recommencez : " JAUNE);
+    }
+    for(char *c = s; *c; c++)       /* '|' est r√©serv√© au fichier de sauvegarde */
+        if(*c == '|')
+            *c = '/';
+    if(entree_redirigee())
+        printf("%s\n", s);
+    printf(RESET);
+}
+
+/* lit une CIN : sans espaces autour et en majuscules, pour que ab123 et AB123 soient la m√™me */
+void lire_cin(char *s, int taille)
+{
+    lire_chaine(s, taille);
+    for(; *s; s++)
+        if(*s >= 'a' && *s <= 'z')
+            *s = (char)(*s - 'a' + 'A');
+}
+
+/* lit un entier ; redemande tant que la saisie n'est pas un nombre */
+int lire_entier(void)
+{
+    int x, r;
+    while((r = scanf("%d", &x)) != 1)
+    {
+        if(r == EOF)
+        {
+            printf(RESET "\n");
+            exit(0);
+        }
+        vider_buffer();
+        if(entree_redirigee())
+            printf("\n");
+        printf(ROUGE "    √ó entrez un nombre : " JAUNE);
+    }
+    vider_buffer();
+    if(entree_redirigee())
+        printf("%d\n", x);
+    printf(RESET);
+    return x;
+}
+
+/* lit un caract√®re en ignorant les espaces et retours √† la ligne */
+char lire_caractere(void)
+{
+    int ch;
+    do
+    {
+        ch = getchar();
+        if(ch == EOF)
+        {
+            printf(RESET "\n");
+            exit(0);
+        }
+    }while(ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r');
+    vider_buffer();
+    if(entree_redirigee())
+        printf("%c\n", ch);
+    printf(RESET);
+    return (char)ch;
+}
+
+/* lit un entier compris entre min et max */
+static int lire_entre(const char *label, int min, int max, const char *aide)
+{
+    int x;
+    for(;;)
+    {
+        ui_champ(label);
+        x = lire_entier();
+        if(x >= min && x <= max)
+            return x;
+        ui_invalide(aide);
+    }
+}
+
+/* lit un caract√®re parmi ceux de "permis" */
+static char lire_choix(const char *label, const char *permis, const char *aide)
+{
+    char c;
+    for(;;)
+    {
+        ui_champ(label);
+        c = lire_caractere();
+        if(strchr(permis, c) != NULL)
+            return c;
+        ui_invalide(aide);
+    }
+}
+
+/* lit une date valide (jour 1-31, mois 1-12, annee >= 2020) */
+static void lire_date(const char *titre, int *j, int *m, int *a)
+{
+    printf("   " GRAS "%s" RESET "\n", titre);
+    *j = lire_entre("Jour ", 1, 31, "le jour doit √™tre entre 1 et 31");
+    *m = lire_entre("Mois ", 1, 12, "le mois doit √™tre entre 1 et 12");
+    *a = lire_entre("Ann√©e", 2020, 2100, "l'ann√©e doit √™tre 2020 ou apr√®s");
+}
+
+/* saisie commune aux patients et aux personnes contact */
+static void lire_identite(char *nom, int tnom, char *prenom, int tprenom, char *adresse, int tadresse,
+                          int *age, char *genre, int *conta, char *etat)
+{
+    ui_champ("Nom          ");
+    lire_chaine(nom, tnom);
+    ui_champ("Pr√©nom       ");
+    lire_chaine(prenom, tprenom);
+    ui_champ("Boulevard    ");
+    lire_chaine(adresse, tadresse);
+    *age   = lire_entre("√Çge          ", 0, 130, "l'√¢ge doit √™tre entre 0 et 130");
+    *genre = lire_choix("Genre (h/f)  ", "hf", "tapez h pour homme ou f pour femme");
+    *conta = lire_entre("Contamination locale ? (1 = oui, 0 = non)", 0, 1, "tapez 1 ou 0");
+    *etat  = lire_choix("√âtat (n = normal, c = critique)", "nc", "tapez n ou c");
+}
+
+/* ************************** compteurs ************************** */
+int compter_patients(patient l)
+{
+    int n = 0;
+    for(; l != NULL; l = l->suivant)
+        n++;
+    return n;
+}
+
+int compter_personnes(personne p)
+{
+    int n = 0;
+    for(; p != NULL; p = p->suivant)
+        n++;
+    return n;
+}
+
+int compter_hotels(hotel h)
+{
+    int n = 0;
+    for(; h != NULL; h = h->suivant)
+        n++;
+    return n;
+}
+
+int compter_confines(personne p)
+{
+    int n = 0;
+    for(; p != NULL; p = p->suivant)
+        if(strcmp(p->nomh, "none") != 0)
+            n++;
+    return n;
+}
+
+int patient_existe(patient l, char cin[25])
+{
+    for(; l != NULL; l = l->suivant)
+        if(strcmp(l->CIN, cin) == 0)
+            return 1;
+    return 0;
+}
+
+/* ***************************ajout patient********************************* */
 patient Ajouter_patient(patient l, char cin1[25])
 {
-/*On crÈe un nouvel ÈlÈment*/
-element* nouveau = (element*)malloc(sizeof(element));
-/*On assigne la valeur au nouvel ÈlÈment*/
-    strcpy(nouveau->CIN,cin1);
-    printf("inserer le nom du patient:");
-       fflush(stdin);
-    scanf("%s",nouveau->nom);
-    printf("inserer le prenom du patient:");
-       fflush(stdin);
-    scanf("%s",nouveau->prenom);
-    printf("inserer le nom du boulvard:");
-       fflush(stdin);
-    scanf("%s",nouveau->adresse);
-       fflush(stdin);
-    printf("inserer l'age:");
-    rewind(stdin);
-    scanf("%d",&nouveau->age);
-    do{
-    printf("inserer le genre homme (h) ou femme (f):");
-    rewind(stdin);
-    scanf("%c",&nouveau->genre);
-    }while(nouveau->genre!='h'&& nouveau->genre!='f');
-   do{
-    printf("inserer contamination local (1) non local (0):\n");
-    rewind(stdin);
-    scanf("%d",&nouveau->conta);
-    }while(nouveau->conta!=1 && nouveau->conta!=0);
-    do{
-    printf("inserer l'etat normal (n) ou critique (c):");
-    rewind(stdin);
-    scanf("%c",&nouveau->etat);
-    }while(nouveau->etat!='n' && nouveau->etat!='c');
-/*On ajoute en fin, donc aucun ÈlÈment ne va suivre*/
-nouveau->suivant = NULL;
-if(l == NULL)
-{
-/*Si la liste est vidÈe il suffit de renvoyer l'ÈlÈment crÈÈ*/
-return nouveau;
-}
-else
-{
-/*Sinon, on parcourt la liste ‡ l'aide d'un pointeur temporaire et on
-indique que le dernier ÈlÈment de la liste est reliÈ au nouvel ÈlÈment*/
-element* tmp=l;
-while(tmp->suivant != NULL)
-{
-tmp = tmp->suivant;
-}
-tmp->suivant = nouveau;
-return l;
-}
-}
-
-
-
-/* ***************************fonction d'affichage patient*********************************/
-int affiche_patient(patient l,char cin3[25])
-{
-element* tmp=l;
-int c=0;
-while(tmp!=NULL){
-
-  if (strcmp(tmp->CIN,cin3) == 0)
+    /*On cr√©e un nouvel √©l√©ment*/
+    element* nouveau = (element*)malloc(sizeof(element));
+    if(nouveau == NULL)
     {
-  printf("CIN :%s\n",tmp->CIN);
-   printf("\t");
+        ui_erreur("M√©moire insuffisante.");
+        return l;
+    }
+    /*On assigne la valeur au nouvel √©l√©ment*/
+    strcpy(nouveau->CIN, cin1);
+    lire_identite(nouveau->nom, sizeof nouveau->nom, nouveau->prenom, sizeof nouveau->prenom,
+                  nouveau->adresse, sizeof nouveau->adresse,
+                  &nouveau->age, &nouveau->genre, &nouveau->conta, &nouveau->etat);
 
-    printf("NOM:%s\n",tmp->nom);
-    printf("\t");
+    /*On ajoute en fin, donc aucun √©l√©ment ne va suivre*/
+    nouveau->suivant = NULL;
+    if(l == NULL)
+        return nouveau;   /*Si la liste est vide il suffit de renvoyer l'√©l√©ment cr√©√©*/
 
-     printf("PRENOM:%s\n",tmp->prenom);
-     printf("\t");
-
-      printf("ADRESSE:%s\n",tmp->adresse);printf("\t");
-       printf("AGE:%d",tmp->age);
-       printf("\t");
-
-        printf("ETAT:%c\n",tmp->etat);
-        printf("\t");
-
-
-         if(tmp->genre=='h')
-         {
-             printf("GENRE:HOMME\n");
-          }
-         else
-            {
-            printf("GENRE:FEMME\n");
-            }
-          if(tmp->conta==1)
-          {
-              printf("la contamination est local\n");
-          }
-          else
-          {
-              printf("la contamination n'est pas local\n");
-          }
-          c++;
+    /*Sinon, on parcourt la liste et on relie le dernier √©l√©ment au nouveau*/
+    element* tmp = l;
+    while(tmp->suivant != NULL)
+        tmp = tmp->suivant;
+    tmp->suivant = nouveau;
+    return l;
 }
-     tmp=tmp->suivant;
 
+/* ***************************fiche d'un patient********************* */
+int affiche_patient(patient l, char cin3[25])
+{
+    element* tmp = l;
+    char nc[50];
+    int c = 0;
+    while(tmp != NULL)
+    {
+        if(strcmp(tmp->CIN, cin3) == 0)
+        {
+            ui_section("PATIENT  %s", tmp->CIN);
+            nom_complet(nc, sizeof nc, tmp->nom, tmp->prenom);
+            libelle("Nom complet");   printf(GRAS "%s" RESET "\n", nc);
+            libelle("Adresse");       printf("%s\n", tmp->adresse);
+            libelle("√Çge");           printf("%d ans\n", tmp->age);
+            libelle("Genre");         printf("%s\n", tmp->genre == 'h' ? "Homme" : "Femme");
+            libelle("√âtat");          etat_colonne(tmp->etat, 10); printf("\n");
+            libelle("Contamination"); printf("%s\n", tmp->conta == 1 ? "Locale" : "Non locale");
+            c++;
+        }
+        tmp = tmp->suivant;
+    }
+    return c;
+}
 
-}
-return c;
-}
 /*-------------------------fonction remplissage maladie chronique--------------------*/
+maladie Ajouter_maladie(maladie m, char cin2[25])
+{
+    element1* nouveau = (element1*)malloc(sizeof(element1));
+    if(nouveau == NULL)
+    {
+        ui_erreur("M√©moire insuffisante.");
+        return m;
+    }
+    strcpy(nouveau->CIN, cin2);
+    ui_champ("Maladie chronique");
+    lire_chaine(nouveau->mc, sizeof nouveau->mc);
 
-maladie Ajouter_maladie(maladie m,char cin2[25])
-{
-/*On crÈe un nouvel ÈlÈment*/
-element1* nouveau = (element1*)malloc(sizeof(element1));
-/*On assigne la valeur au nouvel ÈlÈment*/
-    strcpy(nouveau->CIN,cin2);
-    printf("inserer la maladie chronique: ");
-    fflush(stdin);
-    scanf("%s",nouveau->mc);
+    nouveau->suivant = NULL;
+    if(m == NULL)
+        return nouveau;
 
-
-/*On ajoute en fin, donc aucun ÈlÈment ne va suivre*/
-nouveau->suivant = NULL;
-if(m == NULL)
-{
-/*Si la liste est vidÈe il suffit de renvoyer l'ÈlÈment crÈÈ*/
-return nouveau;
-}
-else
-{
-/*Sinon, on parcourt la liste ‡ l'aide d'un pointeur temporaire et on
-indique que le dernier ÈlÈment de la liste est reliÈ au nouvel ÈlÈment*/
-element1* tmp=m;
-while(tmp->suivant != NULL)
-{
-tmp = tmp->suivant;
-}
-tmp->suivant = nouveau;
-return m;
-}
+    element1* tmp = m;
+    while(tmp->suivant != NULL)
+        tmp = tmp->suivant;
+    tmp->suivant = nouveau;
+    return m;
 }
 
-/*----------------------affichage maladie-------------------*/
-int affiche_maladie(maladie m,char cin3[25])
+/*----------------------ligne "Maladies" d'une fiche (patient ou personne)-------------------*/
+int affiche_maladie(maladie m, char cin3[25])
 {
-element1* tmp=m;
-int c=0;
-
-while(tmp!=NULL){
-
-if(strcmp(tmp->CIN,cin3) == 0)
-{
-printf("MALADIE:%s\n",tmp->mc);
-printf("\t");
-   c++;
-}
-     tmp=tmp->suivant;
-
-}
-return c;
+    element1* tmp = m;
+    int c = 0;
+    libelle("Maladies");
+    while(tmp != NULL)
+    {
+        if(strcmp(tmp->CIN, cin3) == 0)
+        {
+            printf("%s" JAUNE "%s" RESET, c > 0 ? ", " : "", tmp->mc);
+            c++;
+        }
+        tmp = tmp->suivant;
+    }
+    if(c == 0)
+        printf(GRIS "aucune" RESET);
+    printf("\n");
+    return c;
 }
 
 /*----------------insertion personne-----------------------*/
-personne Ajouter_personne(personne p,char cin2[25],char *co)
+/* co re√ßoit la CIN de la personne ajout√©e, pour lui associer ses maladies */
+personne Ajouter_personne(personne p, char cin2[25], char *co)
 {
-/*On crÈe un nouvel ÈlÈment*/
-element2* nouveau = (element2*)malloc(sizeof(element2));
-/*On assigne la valeur au nouvel ÈlÈment*/
-    printf("inserer la cin de la personne:");
-       fflush(stdin);
-    scanf("%s",nouveau->CINP);
-    strcpy(co,nouveau->CINP);
-    strcpy(nouveau->CIN,cin2);
-    strcpy(nouveau->nomh,"none");
-    printf("inserer le nom de la personne:");
-       fflush(stdin);
-    scanf("%s",nouveau->nom);
-    printf("inserer le prenom de la personne:");
-       fflush(stdin);
-    scanf("%s",nouveau->prenom);
-    printf("inserer le nom du boulvard:");
-       fflush(stdin);
-    scanf("%s",nouveau->adresse);
-       fflush(stdin);
-    printf("inserer l'age:");
-    rewind(stdin);
-    scanf("%d",&nouveau->age);
-    do{
-    printf("inserer le genre homme (h) ou femme (f):");
-    rewind(stdin);
-    scanf("%c",&nouveau->genre);
-    }while(nouveau->genre!='h'&& nouveau->genre!='f');
-   do{
-    printf("inserer contamination local (1) non local (0):\n");
-    rewind(stdin);
-    scanf("%d",&nouveau->conta);
-    }while(nouveau->conta!=1 && nouveau->conta!=0);
-    do{
-    printf("inserer l'etat normal (n) ou critique (c):");
-    rewind(stdin);
-    scanf("%c",&nouveau->etat);
-    }while(nouveau->etat!='n' && nouveau->etat!='c');
-/*On ajoute en fin, donc aucun ÈlÈment ne va suivre*/
-nouveau->suivant = NULL;
-if(p == NULL)
-{
-/*Si la liste est vidÈe il suffit de renvoyer l'ÈlÈment crÈÈ*/
-return nouveau;
-}
-else
-{
-/*Sinon, on parcourt la liste ‡ l'aide d'un pointeur temporaire et on
-indique que le dernier ÈlÈment de la liste est reliÈ au nouvel ÈlÈment*/
-element2* tmp=p;
-while(tmp->suivant != NULL)
-{
-tmp = tmp->suivant;
-}
-tmp->suivant = nouveau;
-return p;
-}
-}
-/*--------------------------affichage personnes-------------------*/
-int affiche_personne(personne p,char cin3[25])
-{
-element2* tmp=p;
-int c=0;
-while(tmp!=NULL){
-
-  if (strcmp(tmp->CIN,cin3) == 0)
+    element2* nouveau = (element2*)malloc(sizeof(element2));
+    if(nouveau == NULL)
     {
-  printf("NOM:%s\n",tmp->nom);
-    printf("\t");
+        ui_erreur("M√©moire insuffisante.");
+        co[0] = '\0';
+        return p;
+    }
+    ui_champ("CIN          ");
+    lire_cin(nouveau->CINP, sizeof nouveau->CINP);
+    strcpy(co, nouveau->CINP);
+    strcpy(nouveau->CIN, cin2);
+    strcpy(nouveau->nomh, "none");
+    nouveau->j = nouveau->m = nouveau->annee = 0;
+    nouveau->j1 = nouveau->m1 = nouveau->annee1 = 0;
+    lire_identite(nouveau->nom, sizeof nouveau->nom, nouveau->prenom, sizeof nouveau->prenom,
+                  nouveau->adresse, sizeof nouveau->adresse,
+                  &nouveau->age, &nouveau->genre, &nouveau->conta, &nouveau->etat);
 
-     printf("PRENOM:%s\n",tmp->prenom);
-     printf("\t");
+    nouveau->suivant = NULL;
+    if(p == NULL)
+        return nouveau;
 
-      printf("ADRESSE:%s\n",tmp->adresse);printf("\t");
-       printf("AGE:%d",tmp->age);
-       printf("\t");
-
-        printf("ETAT:%c\n",tmp->etat);
-        printf("\t");
-
-        printf("HOTEL:%s\n",tmp->nomh);
-        printf("\t");
-        printf("\n");
-          c++;
+    element2* tmp = p;
+    while(tmp->suivant != NULL)
+        tmp = tmp->suivant;
+    tmp->suivant = nouveau;
+    return p;
 }
-     tmp=tmp->suivant;
 
+/*--------------------------tableau des personnes en contact avec un patient-------------------*/
+int affiche_personne(personne p, char cin3[25])
+{
+    element2* tmp;
+    char nc[50];
+    int c = 0;
+    for(tmp = p; tmp != NULL; tmp = tmp->suivant)
+        if(strcmp(tmp->CIN, cin3) == 0)
+            c++;
 
-}
-return c;
+    ui_section("PERSONNES EN CONTACT  (%d)", c);
+    if(c == 0)
+    {
+        printf("   " GRIS "aucune personne en contact" RESET "\n");
+        return 0;
+    }
+    printf("   " GRIS);
+    colonne("CIN", 10); colonne("Nom complet", 22); colonne("√Çge", 4); colonne("√âtat", 9); colonne("H√¥tel", 14);
+    printf(RESET "\n");
+    for(tmp = p; tmp != NULL; tmp = tmp->suivant)
+    {
+        if(strcmp(tmp->CIN, cin3) == 0)
+        {
+            char age[8];
+            nom_complet(nc, sizeof nc, tmp->nom, tmp->prenom);
+            snprintf(age, sizeof age, "%d", tmp->age);
+            ui_cascade();
+            printf("   ");
+            colonne(tmp->CINP, 10); colonne(nc, 22); colonne(age, 4); etat_colonne(tmp->etat, 9);
+            if(strcmp(tmp->nomh, "none") == 0)
+                printf(GRIS "‚Äî" RESET);
+            else
+                printf("%s", tmp->nomh);
+            printf("\n");
+        }
+    }
+    return c;
 }
 
 /*-----------------------------modification etat du patient-----------------*/
-
-patient modification_etat(patient l,char cin3[25])
+patient modification_etat(patient l, char cin3[25])
 {
-element* tmp=l;
-int c=0;
-while(tmp!=NULL){
-
-  if (strcmp(tmp->CIN,cin3) == 0)
+    element* tmp = l;
+    while(tmp != NULL)
     {
- do{
-    printf("inserer l'etat normal (n) , critique (c) , gerie (g) , mort (m):");
-    rewind(stdin);
-    scanf("%c",&tmp->etat);
-    }while(tmp->etat!='n' && tmp->etat!='c' && tmp->etat!='g'&& tmp->etat!='m');
-    c++;
-    break;
-}
-     tmp=tmp->suivant;
-
-
-}
-if(c==0)
-{
-    printf("PAS DE PATIENT AVEC LA CIN: %s",cin3);
-    printf("\n");
-}
-else
-  {
-  printf("MODIFICATION REUSSIE");
-  printf("\n");
-  }
-return l;
+        if(strcmp(tmp->CIN, cin3) == 0)
+        {
+            printf("   Patient : " GRAS "%s %s" RESET "  (√©tat actuel : ", tmp->nom, tmp->prenom);
+            printf("%s%s" RESET ")\n\n", etat_couleur(tmp->etat), etat_nom(tmp->etat));
+            tmp->etat = lire_choix("Nouvel √©tat (n = normal, c = critique, g = gu√©ri, m = d√©c√©d√©)",
+                                   "ncgm", "tapez n, c, g ou m");
+            ui_ok("√âtat mis √† jour : %s.", etat_nom(tmp->etat));
+            return l;
+        }
+        tmp = tmp->suivant;
+    }
+    ui_erreur("Aucun patient avec la CIN %s.", cin3);
+    return l;
 }
 
-/*---------------------------suppression du patient--------------------*/
-
-patient supprimer_patient(patient l,char *co)
+/*---------------------------suppression des patients gueris ou morts--------------------*/
+/* Supprime chaque patient d'√©tat 'g' ou 'm' ET ses maladies chroniques. */
+patient supprimer_patient(patient l, maladie *m)
 {
-if(l == NULL)
-return NULL;
-/*Si l'ÈlÈment en cours de traitement est de valeur x, il doit Ítre supprimÈ*/
-if(l->etat == 'g' || l->etat == 'm')
-{
-    strcpy(co,l->CIN);
-/*On le supprime en prenant soin de mÈmoriser l'adresse de l'ÈlÈment suivant*/
-element* tmp = l->suivant;
-free(l);
-/* L'ÈlÈment ayant ÈtÈ supprimÈ, la liste commencera ‡ l'ÈlÈment suivant
-pointant sur une liste qui ne contient plus aucun ÈlÈment ayant la valeur
-recherchÈe */
-tmp=supprimer_patient(tmp,co);
-return tmp;
-}
-else
-{
-/* Si l'ÈlÈment en cours de traitement ne doit pas Ítre supprimÈ, alors la liste
-finale commencera par cet ÈlÈment et suivra une liste ne contenant plus
-d'ÈlÈment ayant la valeur recherchÈe*/
-l->suivant = supprimer_patient(l->suivant,co);
-return l;
-}
+    if(l == NULL)
+        return NULL;
+    if(l->etat == 'g' || l->etat == 'm')
+    {
+        element* tmp = l->suivant;
+        *m = supprimer_maladie(*m, l->CIN);
+        free(l);
+        return supprimer_patient(tmp, m);
+    }
+    l->suivant = supprimer_patient(l->suivant, m);
+    return l;
 }
 
-/*------------------------suppression des maladie chronique---------------*/
-
-maladie supprimer_maladie(maladie m,char *co)
+/*------------------------suppression des maladies chroniques d'une CIN---------------*/
+maladie supprimer_maladie(maladie m, char *cin)
 {
-if(m == NULL)
-return NULL;
-/*Si l'ÈlÈment en cours de traitement est de valeur x, il doit Ítre supprimÈ*/
-if(strcmp(m->CIN,co) == 0)
-{
-/*On le supprime en prenant soin de mÈmoriser l'adresse de l'ÈlÈment suivant*/
-element1* tmp = m->suivant;
-free(m);
-/* L'ÈlÈment ayant ÈtÈ supprimÈ, la liste commencera ‡ l'ÈlÈment suivant
-pointant sur une liste qui ne contient plus aucun ÈlÈment ayant la valeur
-recherchÈe */
-tmp=supprimer_maladie(tmp,co);
-return tmp;
-}
-else
-{
-/* Si l'ÈlÈment en cours de traitement ne doit pas Ítre supprimÈ, alors la liste
-finale commencera par cet ÈlÈment et suivra une liste ne contenant plus
-d'ÈlÈment ayant la valeur recherchÈe*/
-m->suivant = supprimer_maladie(m->suivant,co);
-return m;
-}
+    if(m == NULL)
+        return NULL;
+    if(strcmp(m->CIN, cin) == 0)
+    {
+        element1* tmp = m->suivant;
+        free(m);
+        return supprimer_maladie(tmp, cin);
+    }
+    m->suivant = supprimer_maladie(m->suivant, cin);
+    return m;
 }
 
 /*-------------------------ajout d'un hotel---------------------*/
 hotel Ajouter_hotel(hotel h)
 {
-/*On crÈe un nouvel ÈlÈment*/
-element3* nouveau = (element3*)malloc(sizeof(element3));
-/*On assigne la valeur au nouvel ÈlÈment*/
+    element3* nouveau = (element3*)malloc(sizeof(element3));
+    if(nouveau == NULL)
+    {
+        ui_erreur("M√©moire insuffisante.");
+        return h;
+    }
+    ui_champ("Nom de l'h√¥tel    ");
+    lire_chaine(nouveau->nom, sizeof nouveau->nom);
+    ui_champ("Adresse (boulevard)");
+    lire_chaine(nouveau->adresse, sizeof nouveau->adresse);
+    nouveau->nbmax = lire_entre("Nombre de lits     ", 1, 100000, "au moins 1 lit");
+    nouveau->nbr = 0;
+    ui_ok("H√¥tel ¬´ %s ¬ª ajout√© avec %d lit(s).", nouveau->nom, nouveau->nbmax);
 
-    printf("inserer le nom de l'hotel: ");
-    fflush(stdin);
-    scanf("%s",nouveau->nom);
-    printf("inserer l'adresse de l'hotel: ");
-    fflush(stdin);
-    scanf("%s",nouveau->adresse);
-    printf("inserer le nombre de lits max: ");
-    scanf("%d",&nouveau->nbmax);
-     printf("\n");printf("\n");
-           nouveau->nbr=0;
+    nouveau->suivant = NULL;
+    if(h == NULL)
+        return nouveau;
 
-/*On ajoute en fin, donc aucun ÈlÈment ne va suivre*/
-nouveau->suivant = NULL;
-if(h == NULL)
-{
-/*Si la liste est vidÈe il suffit de renvoyer l'ÈlÈment crÈÈ*/
-return nouveau;
+    element3* tmp = h;
+    while(tmp->suivant != NULL)
+        tmp = tmp->suivant;
+    tmp->suivant = nouveau;
+    return h;
 }
-else
-{
-/*Sinon, on parcourt la liste ‡ l'aide d'un pointeur temporaire et on
-indique que le dernier ÈlÈment de la liste est reliÈ au nouvel ÈlÈment*/
-element3* tmp=h;
-while(tmp->suivant != NULL)
-{
-tmp = tmp->suivant;
-}
-tmp->suivant = nouveau;
-return h;
-}
-}
-/*-------------------------AFFICHER HOTEL---------------------*/
 
+/*-------------------------tableau des hotels avec jauge d'occupation---------------------*/
 int affiche_hotel(hotel h)
 {
-element3* tmp=h;
-int c=0;
-while(tmp!=NULL){
-
-     printf("NOM:%s\n",tmp->nom);
-     printf("\t");
-     printf("|ADRESSE:%s\n",tmp->adresse);
-     printf("\t");
-     printf("PLACE MAX:%d\n",tmp->nbmax);
-     printf("\t");
-     printf("PLACE REMPLIE:%d\n",tmp->nbr);
-     printf("\t");
-     printf("\n");
-
-          c++;
-
-     tmp=tmp->suivant;
-
-
+    element3* tmp;
+    int c = 0;
+    const int jauge = 12;
+    if(h == NULL)
+        return 0;
+    printf("\n   " GRIS);
+    colonne("H√¥tel", 16); colonne("Adresse", 14); colonne("Occupation", jauge + 6); colonne("Libres", 6);
+    printf(RESET "\n   " GRIS);
+    repeter("‚îÄ", LARGEUR - 3);
+    printf(RESET "\n");
+    for(tmp = h; tmp != NULL; tmp = tmp->suivant)
+    {
+        int plein = tmp->nbr * jauge / tmp->nbmax;
+        const char *coul = tmp->nbr >= tmp->nbmax ? ROUGE : (tmp->nbr * 2 >= tmp->nbmax ? JAUNE : VERT);
+        char occ[16];
+        if(tmp->nbr > 0 && plein == 0)
+            plein = 1;
+        ui_cascade();
+        printf("   " GRAS);
+        colonne(tmp->nom, 16);
+        printf(RESET);
+        colonne(tmp->adresse, 14);
+        printf("%s", coul);
+        repeter("‚ñà", plein);
+        printf(GRIS);
+        repeter("‚ñë", jauge - plein);
+        snprintf(occ, sizeof occ, " %d/%d", tmp->nbr, tmp->nbmax);
+        printf(RESET);
+        colonne(occ, 6);
+        printf("%s%d" RESET "\n", coul, tmp->nbmax - tmp->nbr);
+        c++;
+    }
+    return c;
 }
-return c;
-}
-/*----------------------personne en confinement-----------------------*/
+
+/*----------------------tableau des personnes en confinement-----------------------*/
 int affiche_confinement(personne p)
 {
-element2* tmp=p;
-int c=0;
-while(tmp!=NULL){
-if(strcmp(tmp->nomh,"none") != 0)
-{
-     printf("CIN:%s\n",tmp->CINP);
-     printf("\t");
-     printf("NOM:%s\n",tmp->nom);
-     printf("\t");
-     printf("PRENOM:%s\n",tmp->adresse);
-     printf("\t");
-     printf("HOTEL:%s\n",tmp->nomh);
-     printf("\t");
-     printf("DATE DEBUT:%d/%d/%d\n",tmp->j,tmp->m,tmp->annee);
-     printf("\t");
-     printf("DATE FIN:%d/%d/%d\n",tmp->j1,tmp->m1,tmp->annee1);
-     printf("\t");
-     printf("\n");
-
-          c++;
-}
-
-
-     tmp=tmp->suivant;
-
-
-}
-return c;
-}
-/*--------------------------------nombre dispo dans un hotel------------------------*/
-hotel nombre_dispo(personne p,hotel h)
-{
-element2* tmp=p;
-element3* tmp1=h;
-                      int c=0;
-for(tmp1=h;tmp1!=NULL;tmp1=tmp1->suivant){
-      c=0;
-     for(tmp=p;tmp!=NULL;tmp=tmp->suivant)
-     {
-      if(strcmp(tmp->nomh,tmp1->nom) == 0)
-      {
-          c++;
-      }
-
-     }
-    tmp1->nbr=c;
-
-}
-return h;
-}
-/*----------------------------afficher maladie chronique pour personne----------------------*/
-int affiche_pmaladie(maladie m,char cin2[25])
-{
-element1* tmp=m;
-int c=0;
-
-while(tmp!=NULL){
-
-if(strcmp(tmp->CIN,cin2) == 0)
-{
-printf("MALADIE:%s\n",tmp->mc);
-printf("\t");
-   c++;
-}
-     tmp=tmp->suivant;
-
-}
-return c;
-}
-
-/*---------------------------afficher personne seule--------------------------*/
-int affiche_personneseul(personne p,char cin2[25])
-{
- element2* tmp=p;
- int c=0;
- while(tmp!=NULL){
-
-  if (strcmp(tmp->CINP,cin2) == 0)
+    element2* tmp;
+    char nc[50], d1[12], d2[12];
+    int c = compter_confines(p);
+    if(c == 0)
+        return 0;
+    printf("\n   " GRIS);
+    colonne("CIN", 8); colonne("Nom complet", 18); colonne("H√¥tel", 13); colonne("D√©but", 10); colonne("Fin", 10);
+    printf(RESET "\n   " GRIS);
+    repeter("‚îÄ", LARGEUR - 3);
+    printf(RESET "\n");
+    for(tmp = p; tmp != NULL; tmp = tmp->suivant)
     {
-  printf("NOM:%s\n",tmp->nom);
-    printf("\t");
-
-     printf("PRENOM:%s\n",tmp->prenom);
-     printf("\t");
-
-      printf("ADRESSE:%s\n",tmp->adresse);printf("\t");
-       printf("AGE:%d",tmp->age);
-       printf("\t");
-
-        printf("ETAT:%c\n",tmp->etat);
-        printf("\t");
-
-        printf("HOTEL:%s\n",tmp->nomh);
-        printf("\t");
-        printf("\n");
-          c++;
-}
-     tmp=tmp->suivant;
-
-
-}
-return c;
+        if(strcmp(tmp->nomh, "none") != 0)
+        {
+            nom_complet(nc, sizeof nc, tmp->nom, tmp->prenom);
+            snprintf(d1, sizeof d1, "%02d/%02d/%04d", tmp->j, tmp->m, tmp->annee);
+            snprintf(d2, sizeof d2, "%02d/%02d/%04d", tmp->j1, tmp->m1, tmp->annee1);
+            ui_cascade();
+            printf("   ");
+            colonne(tmp->CINP, 8);
+            printf(GRAS); colonne(nc, 18); printf(RESET);
+            printf(CYAN); colonne(tmp->nomh, 13); printf(RESET);
+            colonne(d1, 10); colonne(d2, 10);
+            printf("\n");
+        }
+    }
+    printf("\n   " GRIS "%d personne(s) en confinement" RESET "\n", c);
+    return c;
 }
 
-/*----------------------------affichage patient par age et genre--------------*/
-/*----------------------------confinement personne22------------------------*/
-
-personne transfere_personne123(personne p,hotel h, char cin5[25])
+/*--------------------------------nombre de places occup√©es dans chaque hotel------------------------*/
+hotel nombre_dispo(personne p, hotel h)
 {
-element2* tmp=p;
-element3* tmp1=h;
+    element2* tmp;
+    element3* tmp1;
+    int c;
+    for(tmp1 = h; tmp1 != NULL; tmp1 = tmp1->suivant)
+    {
+        c = 0;
+        for(tmp = p; tmp != NULL; tmp = tmp->suivant)
+        {
+            if(strcmp(tmp->nomh, tmp1->nom) == 0)
+                c++;
+        }
+        tmp1->nbr = c;
+    }
+    return h;
+}
 
-int c;
-int s=0;
- c=tmp1->nbr;
-for(tmp=p;tmp!=NULL;tmp=tmp->suivant){
+/*---------------------------fiche d'une personne contact--------------------------*/
+int affiche_personneseul(personne p, char cin2[25])
+{
+    element2* tmp = p;
+    char nc[50];
+    int c = 0;
+    while(tmp != NULL)
+    {
+        if(strcmp(tmp->CINP, cin2) == 0)
+        {
+            ui_section("PERSONNE CONTACT  %s", tmp->CINP);
+            nom_complet(nc, sizeof nc, tmp->nom, tmp->prenom);
+            libelle("Nom complet");  printf(GRAS "%s" RESET "\n", nc);
+            libelle("Contact de");   printf("patient %s\n", tmp->CIN);
+            libelle("Adresse");      printf("%s\n", tmp->adresse);
+            libelle("√Çge");          printf("%d ans\n", tmp->age);
+            libelle("Genre");        printf("%s\n", tmp->genre == 'h' ? "Homme" : "Femme");
+            libelle("√âtat");         etat_colonne(tmp->etat, 10); printf("\n");
+            libelle("Confinement");
+            if(strcmp(tmp->nomh, "none") == 0)
+                printf(GRIS "non confin√©(e)" RESET "\n");
+            else
+                printf(CYAN "%s" RESET "  du %02d/%02d/%04d au %02d/%02d/%04d\n", tmp->nomh,
+                       tmp->j, tmp->m, tmp->annee, tmp->j1, tmp->m1, tmp->annee1);
+            c++;
+        }
+        tmp = tmp->suivant;
+    }
+    return c;
+}
 
-    if(strcmp(tmp->CINP,cin5) == 0)
-     {
+/* compare deux textes sans tenir compte des majuscules (Maarif = maarif) */
+static int meme_texte(const char *a, const char *b)
+{
+    for(; *a && *b; a++, b++)
+    {
+        char x = (*a >= 'A' && *a <= 'Z') ? (char)(*a - 'A' + 'a') : *a;
+        char y = (*b >= 'A' && *b <= 'Z') ? (char)(*b - 'A' + 'a') : *b;
+        if(x != y)
+            return 0;
+    }
+    return *a == *b;
+}
 
-    for(tmp1=h;tmp1!=NULL;tmp1=tmp1->suivant)
- {
+/* premier h√¥tel √† cette adresse qui a encore un lit libre, ou NULL */
+static element3* hotel_disponible(hotel h, const char *adresse)
+{
+    for(; h != NULL; h = h->suivant)
+        if(meme_texte(h->adresse, adresse) && h->nbr < h->nbmax)
+            return h;
+    return NULL;
+}
 
-  if(strcmp(tmp->adresse,tmp1->adresse) == 0 && strcmp(tmp->nomh,"none")==0 && c <=(tmp1->nbmax) )
-  {
-      strcpy(tmp->nomh,tmp1->nom);
-    printf("COMPLETER LES INFOS DE MR %s %s ",tmp->nom,tmp->prenom);
+int personne_existe(personne p, char cin[25])
+{
+    for(; p != NULL; p = p->suivant)
+        if(strcmp(p->CINP, cin) == 0)
+            return 1;
+    return 0;
+}
+
+/* tableau des personnes contact pas encore confin√©es, avec l'h√¥tel qui peut les accueillir */
+int affiche_transferables(personne p, hotel h)
+{
+    element2* tmp;
+    element3* dispo;
+    char nc[50];
+    int c = 0;
+    for(tmp = p; tmp != NULL; tmp = tmp->suivant)
+        if(strcmp(tmp->nomh, "none") == 0)
+            c++;
+    if(c == 0)
+        return 0;
+
+    ui_section("PERSONNES CONTACT √Ä TRANSF√âRER  (%d)", c);
+    printf("   " GRIS);
+    colonne("CIN", 8); colonne("Nom complet", 18); colonne("Boulevard", 14); colonne("H√¥tel disponible", 16);
+    printf(RESET "\n");
+    for(tmp = p; tmp != NULL; tmp = tmp->suivant)
+    {
+        if(strcmp(tmp->nomh, "none") == 0)
+        {
+            ui_cascade();
+            nom_complet(nc, sizeof nc, tmp->nom, tmp->prenom);
+            printf("   " GRAS);
+            colonne(tmp->CINP, 8);
+            printf(RESET);
+            colonne(nc, 18);
+            colonne(tmp->adresse, 14);
+            dispo = hotel_disponible(h, tmp->adresse);
+            if(dispo != NULL)
+                printf(VERT "%s" RESET "\n", dispo->nom);
+            else
+                printf(ROUGE "aucun √† cette adresse" RESET "\n");
+        }
+    }
     printf("\n");
-    printf("inserer la date debut de confinement: ");
-    do{
-    printf("inserer le jour: ");
-    rewind(stdin);
-    scanf("%d",&tmp->j);
-    }while(tmp->j<1 && tmp->j>31);
-
-      do{
-    printf("inserer le mois: ");
-    rewind(stdin);
-    scanf("%d",&tmp->m);
-    }while(tmp->m<1 && tmp->m>12);
-
-    do{
-    printf("inserer l'annee: ");
-    rewind(stdin);
-    scanf("%d",&tmp->annee);
-    }while(tmp->annee<2020);
-     printf("\n");
-     printf("inserer la date fin de confinement: ");
-     printf("\n");
-        do{
-    printf("inserer le jour: ");
-    rewind(stdin);
-    scanf("%d",&tmp->j);
-    }while(tmp->j1<1 && tmp->j1>31);
-
-      do{
-    printf("inserer le mois: ");
-    rewind(stdin);
-    scanf("%d",&tmp->m1);
-    }while(tmp->m1<1 && tmp->m1>12);
-
-    do{
-    printf("inserer l'annee: ");
-    rewind(stdin);
-    scanf("%d",&tmp->annee1);
-    }while(tmp->annee1<2020);
-     printf("\n");
-     c++;
-     s++;
-     break;
-  }
-
-
+    return c;
 }
-}
-if(s!=0)
+
+/*----------------------------transfert d'une personne en confinement------------------------*/
+/* Place la personne dans le premier hotel de la m√™me adresse qui a encore de la place.
+   Appeler nombre_dispo avant pour que les compteurs nbr soient √† jour. */
+personne transfere_personne123(personne p, hotel h, char cin5[25])
 {
-    break;
-}
-if(s!=0)
-{
- printf("TRANSFERE REUSSIE");
-    break;
-}
+    element2* tmp;
+    element3* tmp1;
 
-}
-return p;
-}
-
-
-/*---------------------------------affichage par age et genre-------------------*/
- int affiche_ageetgenre(patient l,char g,int a)
-{
- element* tmp=l;
- int c=0;
- while(tmp!=NULL){
-
-  if (tmp->genre==g && tmp->age==a)
+    if(h == NULL)
     {
-  printf("NOM:%s\n",tmp->nom);
-    printf("\t");
+        ui_erreur("Aucun h√¥tel enregistr√©. Ajoutez-en un avec le choix 3.");
+        return p;
+    }
 
-     printf("PRENOM:%s\n",tmp->prenom);
-     printf("\t");
-
-      printf("ADRESSE:%s\n",tmp->adresse);printf("\t");
-       printf("AGE:%d",tmp->age);
-       printf("\t");
-
-        printf("ETAT:%c\n",tmp->etat);
-        printf("\t");
-
-        printf("AGE:%d\n",tmp->age);
-        printf("\t");
-
-         if(tmp->genre=='h')
-         {
-             printf("GENRE:HOMME\n");
-          }
-         else
-            {
-            printf("GENRE:FEMME\n");
-            }
-          c++;
-}
-     tmp=tmp->suivant;
-
-
-}
-return c;
-}
-/*---------------------------suppresion de la personne----------------------*/
-personne supprimer_personne(personne p,char *co)
-{
-if(p == NULL)
-return NULL;
-/*Si l'ÈlÈment en cours de traitement est de valeur x, il doit Ítre supprimÈ*/
-if(p->etat == 'g' || p->etat == 'm')
-{
-    strcpy(co,p->CINP);
-/*On le supprime en prenant soin de mÈmoriser l'adresse de l'ÈlÈment suivant*/
-element2* tmp = p->suivant;
-free(p);
-/* L'ÈlÈment ayant ÈtÈ supprimÈ, la liste commencera ‡ l'ÈlÈment suivant
-pointant sur une liste qui ne contient plus aucun ÈlÈment ayant la valeur
-recherchÈe */
-tmp=supprimer_personne(tmp,co);
-return tmp;
-}
-else
-{
-/* Si l'ÈlÈment en cours de traitement ne doit pas Ítre supprimÈ, alors la liste
-finale commencera par cet ÈlÈment et suivra une liste ne contenant plus
-d'ÈlÈment ayant la valeur recherchÈe*/
-p->suivant = supprimer_personne(p->suivant,co);
-return p;
-}
-}
-
-/*-----------------------------modification etat du personne-----------------*/
-
-personne modification_etatperso(personne p,char cin3[25])
-{
-element2* tmp=p;
-int c=0;
-while(tmp!=NULL){
-
-  if (strcmp(tmp->CINP,cin3) == 0)
+    /* recherche de la personne */
+    for(tmp = p; tmp != NULL; tmp = tmp->suivant)
     {
- do{
-    printf("inserer l'etat normal (n) , critique (c) , gerie (g) , mort (m):");
-    rewind(stdin);
-    scanf("%c",&tmp->etat);
-    }while(tmp->etat!='n' && tmp->etat!='c' && tmp->etat!='g'&& tmp->etat!='m');
-    c++;
-    break;
-}
-     tmp=tmp->suivant;
+        if(strcmp(tmp->CINP, cin5) == 0)
+            break;
+    }
+    if(tmp == NULL)
+    {
+        ui_erreur("Aucune personne contact avec la CIN %s.", cin5);
+        return p;
+    }
+    if(strcmp(tmp->nomh, "none") != 0)
+    {
+        ui_info("%s %s est d√©j√† en confinement √† l'h√¥tel %s.", tmp->nom, tmp->prenom, tmp->nomh);
+        return p;
+    }
 
+    /* recherche d'un hotel √† la m√™me adresse avec une place libre */
+    tmp1 = hotel_disponible(h, tmp->adresse);
+    if(tmp1 == NULL)
+    {
+        ui_erreur("Aucun h√¥tel avec des lits libres au boulevard ¬´ %s ¬ª.", tmp->adresse);
+        printf("    " GRIS "L'h√¥tel doit avoir la m√™me adresse que la personne (voir le choix 4)." RESET "\n");
+        return p;
+    }
 
-}
-if(c==0)
-{
-    printf("PAS DE PATIENT AVEC LA CIN: %s",cin3);
+    printf("\n   " GRAS "%s %s" RESET "  ‚Üí  " CYAN "%s" RESET "  (%d/%d lits occup√©s)\n\n",
+           tmp->nom, tmp->prenom, tmp1->nom, tmp1->nbr, tmp1->nbmax);
+    lire_date("D√©but du confinement", &tmp->j, &tmp->m, &tmp->annee);
     printf("\n");
+    for(;;)
+    {
+        lire_date("Fin du confinement", &tmp->j1, &tmp->m1, &tmp->annee1);
+        if(tmp->annee1*10000 + tmp->m1*100 + tmp->j1 >= tmp->annee*10000 + tmp->m*100 + tmp->j)
+            break;
+        ui_invalide("la date de fin doit √™tre apr√®s la date de d√©but");
+    }
+
+    strcpy(tmp->nomh, tmp1->nom);
+    tmp1->nbr++;
+    ui_ok("%s %s est transf√©r√©(e) √† l'h√¥tel %s (%d/%d lits).", tmp->nom, tmp->prenom,
+          tmp1->nom, tmp1->nbr, tmp1->nbmax);
+    return p;
 }
-else
-  {
-  printf("MODIFICATION REUSSIE");
-  printf("\n");
-  }
-return p;
+
+/*---------------------------------tableau des patients selon age et genre-------------------*/
+int affiche_ageetgenre(patient l, char g, int a)
+{
+    element* tmp;
+    char nc[50];
+    int c = 0;
+    for(tmp = l; tmp != NULL; tmp = tmp->suivant)
+        if(tmp->genre == g && tmp->age == a)
+            c++;
+    if(c == 0)
+        return 0;
+
+    ui_section("%d PATIENT(S) ‚Äî %s DE %d ANS", c, g == 'h' ? "HOMMES" : "FEMMES", a);
+    printf("   " GRIS);
+    colonne("CIN", 10); colonne("Nom complet", 22); colonne("Adresse", 18); colonne("√âtat", 9);
+    printf(RESET "\n");
+    for(tmp = l; tmp != NULL; tmp = tmp->suivant)
+    {
+        if(tmp->genre == g && tmp->age == a)
+        {
+            nom_complet(nc, sizeof nc, tmp->nom, tmp->prenom);
+            ui_cascade();
+            printf("   ");
+            colonne(tmp->CIN, 10); colonne(nc, 22); colonne(tmp->adresse, 18); etat_colonne(tmp->etat, 9);
+            printf("\n");
+        }
+    }
+    return c;
+}
+
+/*---------------------------suppression des personnes gueries ou mortes----------------------*/
+/* Supprime chaque personne d'√©tat 'g' ou 'm' ET ses maladies chroniques. */
+personne supprimer_personne(personne p, maladie *m)
+{
+    if(p == NULL)
+        return NULL;
+    if(p->etat == 'g' || p->etat == 'm')
+    {
+        element2* tmp = p->suivant;
+        *m = supprimer_maladie(*m, p->CINP);
+        free(p);
+        return supprimer_personne(tmp, m);
+    }
+    p->suivant = supprimer_personne(p->suivant, m);
+    return p;
+}
+
+/*-----------------------------modification etat d'une personne-----------------*/
+personne modification_etatperso(personne p, char cin3[25])
+{
+    element2* tmp = p;
+    while(tmp != NULL)
+    {
+        if(strcmp(tmp->CINP, cin3) == 0)
+        {
+            printf("   Personne : " GRAS "%s %s" RESET "  (√©tat actuel : ", tmp->nom, tmp->prenom);
+            printf("%s%s" RESET ")\n\n", etat_couleur(tmp->etat), etat_nom(tmp->etat));
+            tmp->etat = lire_choix("Nouvel √©tat (n = normal, c = critique, g = gu√©ri, m = d√©c√©d√©)",
+                                   "ncgm", "tapez n, c, g ou m");
+            ui_ok("√âtat mis √† jour : %s.", etat_nom(tmp->etat));
+            return p;
+        }
+        tmp = tmp->suivant;
+    }
+    ui_erreur("Aucune personne contact avec la CIN %s.", cin3);
+    return p;
+}
+
+/* ************************** sauvegarde des donn√©es ************************** */
+/* Toutes les listes sont enregistr√©es dans un fichier texte, une ligne par √©l√©ment :
+     H|nom|adresse|places occup√©es|places max                      (h√¥tel)
+     P|CIN|nom|pr√©nom|adresse|√¢ge|√©tat|genre|contamination          (patient)
+     M|CIN|maladie                                                  (maladie chronique)
+     C|CIN patient|nom|pr√©nom|adresse|√¢ge|√©tat|genre|contamination|
+       jour|mois|ann√©e|jour fin|mois fin|ann√©e fin|h√¥tel|CIN personne (personne contact)
+   Le fichier est plac√© √† c√¥t√© de main.exe. La variable d'environnement CORONA_FICHIER
+   permet d'utiliser un autre fichier (pratique pour les tests). */
+
+#define NOM_FICHIER "donnees_corona.txt"
+
+/* chemin complet du fichier de sauvegarde */
+const char *fichier_donnees(void)
+{
+    static char chemin[1024] = "";
+    const char *force;
+    if(chemin[0] != '\0')
+        return chemin;
+    force = getenv("CORONA_FICHIER");
+    if(force != NULL && force[0] != '\0')
+    {
+        snprintf(chemin, sizeof chemin, "%s", force);
+        return chemin;
+    }
+#ifdef _WIN32
+    {
+        DWORD n = GetModuleFileNameA(NULL, chemin, sizeof chemin);
+        char *fin = (n > 0 && n < sizeof chemin) ? strrchr(chemin, '\\') : NULL;
+        if(fin != NULL && (size_t)(fin - chemin) + 1 + sizeof NOM_FICHIER <= sizeof chemin)
+        {
+            strcpy(fin + 1, NOM_FICHIER);
+            return chemin;
+        }
+    }
+#endif
+    snprintf(chemin, sizeof chemin, "%s", NOM_FICHIER);
+    return chemin;
+}
+
+/* coupe une ligne sur les '|' ; renvoie le nombre de champs */
+static int decouper(char *ligne, char *champs[], int max)
+{
+    int n = 0;
+    char *c = ligne;
+    champs[n++] = c;
+    for(; *c; c++)
+    {
+        if(*c == '|')
+        {
+            if(n == max)
+                return -1;
+            *c = '\0';
+            champs[n++] = c + 1;
+        }
+    }
+    return n;
+}
+
+static void copier(char *dest, size_t taille, const char *src)
+{
+    strncpy(dest, src, taille - 1);
+    dest[taille - 1] = '\0';
+}
+
+/* Recharge les listes depuis le fichier.
+   Renvoie le nombre d'√©l√©ments charg√©s, ou -1 s'il n'y a pas encore de fichier.
+   *erreurs re√ßoit le nombre de lignes illisibles (ignor√©es). */
+int charger_donnees(patient *l, maladie *m, personne *p, hotel *h, int *erreurs)
+{
+    FILE *f = fopen(fichier_donnees(), "r");
+    char ligne[600];
+    char *c[20];
+    int n, total = 0;
+    element *dl = NULL;      /* derniers √©l√©ments de chaque liste : ajout en fin rapide */
+    element1 *dm = NULL;
+    element2 *dp = NULL;
+    element3 *dh = NULL;
+
+    *erreurs = 0;
+    if(f == NULL)
+        return -1;
+    while(fgets(ligne, sizeof ligne, f) != NULL)
+    {
+        ligne[strcspn(ligne, "\r\n")] = '\0';
+        if(ligne[0] == '\0' || ligne[0] == '#')
+            continue;
+        n = decouper(ligne, c, 20);
+
+        if(n == 5 && strcmp(c[0], "H") == 0)
+        {
+            element3 *e = (element3*)malloc(sizeof(element3));
+            if(e == NULL) break;
+            copier(e->nom, sizeof e->nom, c[1]);
+            copier(e->adresse, sizeof e->adresse, c[2]);
+            e->nbr = atoi(c[3]);
+            e->nbmax = atoi(c[4]);
+            e->suivant = NULL;
+            if(dh) dh->suivant = e; else *h = e;
+            dh = e;
+        }
+        else if(n == 9 && strcmp(c[0], "P") == 0)
+        {
+            element *e = (element*)malloc(sizeof(element));
+            if(e == NULL) break;
+            copier(e->CIN, sizeof e->CIN, c[1]);
+            copier(e->nom, sizeof e->nom, c[2]);
+            copier(e->prenom, sizeof e->prenom, c[3]);
+            copier(e->adresse, sizeof e->adresse, c[4]);
+            e->age = atoi(c[5]);
+            e->etat = c[6][0];
+            e->genre = c[7][0];
+            e->conta = atoi(c[8]);
+            e->suivant = NULL;
+            if(dl) dl->suivant = e; else *l = e;
+            dl = e;
+        }
+        else if(n == 3 && strcmp(c[0], "M") == 0)
+        {
+            element1 *e = (element1*)malloc(sizeof(element1));
+            if(e == NULL) break;
+            copier(e->CIN, sizeof e->CIN, c[1]);
+            copier(e->mc, sizeof e->mc, c[2]);
+            e->suivant = NULL;
+            if(dm) dm->suivant = e; else *m = e;
+            dm = e;
+        }
+        else if(n == 17 && strcmp(c[0], "C") == 0)
+        {
+            element2 *e = (element2*)malloc(sizeof(element2));
+            if(e == NULL) break;
+            copier(e->CIN, sizeof e->CIN, c[1]);
+            copier(e->nom, sizeof e->nom, c[2]);
+            copier(e->prenom, sizeof e->prenom, c[3]);
+            copier(e->adresse, sizeof e->adresse, c[4]);
+            e->age = atoi(c[5]);
+            e->etat = c[6][0];
+            e->genre = c[7][0];
+            e->conta = atoi(c[8]);
+            e->j = atoi(c[9]);   e->m = atoi(c[10]);  e->annee = atoi(c[11]);
+            e->j1 = atoi(c[12]); e->m1 = atoi(c[13]); e->annee1 = atoi(c[14]);
+            copier(e->nomh, sizeof e->nomh, c[15]);
+            copier(e->CINP, sizeof e->CINP, c[16]);
+            e->suivant = NULL;
+            if(dp) dp->suivant = e; else *p = e;
+            dp = e;
+        }
+        else
+        {
+            (*erreurs)++;
+            continue;
+        }
+        total++;
+    }
+    fclose(f);
+    nombre_dispo(*p, *h);    /* recalcule les places occup√©es */
+    return total;
+}
+
+/* √âcrit toutes les listes dans le fichier. Renvoie 1 si tout s'est bien pass√©.
+   On √©crit d'abord dans un fichier temporaire, puis on remplace l'ancien :
+   si le programme est coup√© pendant l'√©criture, l'ancienne sauvegarde reste intacte. */
+int sauvegarder_donnees(patient l, maladie m, personne p, hotel h)
+{
+    char tmp[1100];
+    FILE *f;
+    const char *chemin = fichier_donnees();
+    snprintf(tmp, sizeof tmp, "%s.tmp", chemin);
+    f = fopen(tmp, "w");
+    if(f == NULL)
+        return 0;
+    fprintf(f, "# Gestion Corona - sauvegarde automatique\n");
+    for(; h != NULL; h = h->suivant)
+        fprintf(f, "H|%s|%s|%d|%d\n", h->nom, h->adresse, h->nbr, h->nbmax);
+    for(; l != NULL; l = l->suivant)
+        fprintf(f, "P|%s|%s|%s|%s|%d|%c|%c|%d\n", l->CIN, l->nom, l->prenom, l->adresse,
+                l->age, l->etat, l->genre, l->conta);
+    for(; m != NULL; m = m->suivant)
+        fprintf(f, "M|%s|%s\n", m->CIN, m->mc);
+    for(; p != NULL; p = p->suivant)
+        fprintf(f, "C|%s|%s|%s|%s|%d|%c|%c|%d|%d|%d|%d|%d|%d|%d|%s|%s\n", p->CIN, p->nom, p->prenom,
+                p->adresse, p->age, p->etat, p->genre, p->conta, p->j, p->m, p->annee,
+                p->j1, p->m1, p->annee1, p->nomh, p->CINP);
+    if(ferror(f) | fclose(f))
+    {
+        remove(tmp);
+        return 0;
+    }
+#ifdef _WIN32
+    if(!MoveFileExA(tmp, chemin, MOVEFILE_REPLACE_EXISTING))
+#else
+    if(rename(tmp, chemin) != 0)
+#endif
+    {
+        remove(tmp);
+        return 0;
+    }
+    return 1;
 }

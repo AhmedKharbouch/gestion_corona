@@ -1,381 +1,298 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include "body.c"
+#include <string.h>
+#include "head.h"
 /*--------------------ahmed kharbouch 2ap g2 maarif------------------*/
-int main()
+/* Compilation : gcc main.c body.c -o output/main.exe */
+
+/* message affiché une seule fois en haut du menu (chargement, erreur de sauvegarde...) */
+static char annonce[200] = "";
+
+/* nom du fichier sans le dossier, pour l'affichage */
+static const char *nom_court(const char *chemin)
 {
-patient l=NULL;
-maladie m=NULL;
-personne p=NULL;
-hotel h=NULL;
-char cin[25];
-char cin5[25];
-char cin6[25];
-char cin3[25];
-char co[25];
-char co1[25];
-char co2[25];
-char g;
-int n1,i,c,c1,c3,choix,c4,n3,t,c5,c6,c7,choix1,v1,a;
-int n2;
-
-/*------------------ veuillez ignorer cette partie merci-------------*/
-
-/*--------------INSERTION PATIENTS MALADIES ET PERSONNES---------------
-
-
-printf("inserer la cin:");
-fflush(stdin);
-scanf("%s",cin);
-do{
-printf("le nombre de maladie chronique ne depasse pas 3:");
-scanf("%d",&n1);
-}while(n1<0 || n1>3);
-printf("le nombre de personne en contact avec le patient:");
-scanf("%d",&n2);
-l=Ajouter_patient(l,cin);
-if(n1!=0)
-{
- for(i=1;i<=n1;i++)
- {
-  m=Ajouter_maladie(m,cin);
- }
-if(n2!=0)
-{
-for(i=1;i<=n2;i++)
- {
-  p=Ajouter_personne(p,cin);
- }
-}
+    const char *a = strrchr(chemin, '\\');
+    const char *b = strrchr(chemin, '/');
+    if(b > a)
+        a = b;
+    return a ? a + 1 : chemin;
 }
 
-/*--------------------------FIN DE LINSERTION-------------------------*/
-
-/*------------------affichage patient maladie et personne-------------
-
-printf("INSERER LA CIN DU PATIENT A AFFICHER:");
-fflush(stdin);
-scanf("%s",cin);
-c=affiche_patient(l,cin);
-c1=affiche_maladie(m,cin);
-c3=affiche_personne(p,cin);
-if(c==0)
+/* menu principal avec un résumé des données en haut */
+static void afficher_menu(patient l, personne p, hotel h)
 {
-    printf("PAS DE PATIENT AVEC CETTE CIN:%s",cin);
+    ui_titre("GESTION CORONA  ·  HÔPITAL");
+    printf("\n   Patients " GRAS "%d" RESET "   " GRIS "·" RESET
+           "   Contacts " GRAS "%d" RESET "   " GRIS "·" RESET
+           "   Hôtels " GRAS "%d" RESET "   " GRIS "·" RESET
+           "   En confinement " GRAS "%d" RESET "\n",
+           compter_patients(l), compter_personnes(p), compter_hotels(h), compter_confines(p));
+    printf("   " GRIS "Sauvegarde automatique dans %s" RESET "\n", nom_court(fichier_donnees()));
+    if(annonce[0] != '\0')
+    {
+        printf("\n   %s" RESET "\n", annonce);
+        annonce[0] = '\0';
+    }
+
+    ui_section("PATIENTS");
+    ui_item(1, "Ajouter un patient");
+    ui_item(2, "Afficher les patients");
+    ui_item(5, "Modifier l'état d'un patient");
+    ui_section("PERSONNES CONTACT");
+    ui_item(7, "Afficher une personne");
+    ui_item(9, "Modifier l'état d'une personne");
+    ui_section("CONFINEMENT");
+    ui_item(3, "Ajouter un hôtel");
+    ui_item(4, "Afficher les hôtels");
+    ui_item(6, "Transférer une personne en confinement");
+    ui_item(8, "Afficher les personnes en confinement");
     printf("\n");
-}
-else
-    {
-    if(c1==0)
-    {
-      printf("PAS DE MALADIE CHRONIQUE POUR CE PATIENT");
-      printf("\n");
-    }
-    else
-    {}
-        if(c3==0)
-    {
-      printf("PAS DE PERSONNES EN CONTACT AVEC CE PATIENT");
-      printf("\n");
-    }
-    else
-        {}
-    }
-/*--------------INSERTION PATIENTS MALADIES ET PERSONNES---------------*
-    printf("inserer la cin:");
-fflush(stdin);
-scanf("%s",cin);
-do{
-printf("le nombre de maladie chronique ne depasse pas 3:");
-scanf("%d",&n1);
-}while(n1<0 || n1>3);
-printf("le nombre de personne en contact avec le patient:");
-scanf("%d",&n2);
-l=Ajouter_patient(l,cin);
-if(n1!=0)
-{
- for(i=1;i<=n1;i++)
- {
-  m=Ajouter_maladie(m,cin);
- }
-if(n2!=0)
-{
-for(i=1;i<=n2;i++)
- {
-  p=Ajouter_personne(p,cin);
- }
-}
-}
-
-/*------------------affichage patient maladie et personne-------------*
-printf("INSERER LA CIN DU PATIENT A AFFICHER:");
-fflush(stdin);
-scanf("%s",cin);
-c=affiche_patient(l,cin);do{
-printf("le nombre de maladie chronique ne depasse pas 3:");
-scanf("%d",&n1);
-}while(n1<0 || n1>3);
-c1=affiche_maladie(m,cin);
-c3=affiche_personne(p,cin);
-if(c==0)
-{
-    printf("PAS DE PATIENT AVEC CETTE CIN:%s",cin);
+    ui_item(10, "Quitter");
     printf("\n");
+    ui_champ("Votre choix");
 }
-else
-    {
-    if(c1==0)
-    {
-      printf("PAS DE MALADIE CHRONIQUE POUR CE PATIENT");
-      printf("\n");
-    }
-    else
-    {}
-        if(c3==0)
-    {
-      printf("PAS DE PERSONNES EN CONTACT AVEC CE PATIENT");
-      printf("\n");
-    }
-    else
-        {}
-    }
-    /*-------------modification et suppression de l'etat du patient-------------*
-printf("INSERER LA CIN DU PATIENT A MODIFIER:");
-scanf("%s",cin);
-l=modification_etat(l,cin);
-affiche_patient(l,cin);
-l=supprimer_patient(l,co);
-m=supprimer_maladie(m,co);
 
--------------------------------------FIN-------------------------*/
-
-/*----------------------------------ajout des hotels-----------------------
-h=Ajouter_hotel(h);
-*/
-
-do
+/* lit un entier entre min et max avec un message d'aide */
+static int demander(const char *label, int min, int max, const char *aide)
 {
-
-printf(" ____________MENU DE GESTION_____________\n");
-printf("|         1.AJOUTER UN PATIENT           |\n");
-printf("|         2.AFFICHER PATIENT             |\n");
-printf("|         3.AJOUTER UN HOTEL             |\n");
-printf("|         4.AFFICHER HOTEL               |\n");
-printf("|         5.MODIFICATION ETAT PATIENT    |\n");
-printf("|         6.TRANSFERE CONFINEMENT        |\n");
-printf("|         7.AFFICHER PERSONNE            |\n");
-printf("|         8.AFFICHER CONFINEMENT         |\n");
-printf("|         9.MODIFICATION ETAT PERSONNE   |\n");
-printf("|______________10.QUITTER________________|\n");
-printf("\n");
-printf("    Entrer un choix : ") ;
-scanf("%d",&choix);
-system("cls");
-switch(choix)
-{
-case 1:/*----------------------la case 1------------------------*/
-printf("inserer la cin:");
-fflush(stdin);
-scanf("%s",cin);
-do{
-printf("le nombre de maladie chronique ne depasse pas 3:");
-scanf("%d",&n1);
-}while(n1<0 || n1>3);
-printf("le nombre de personne en contact avec le patient:");
-scanf("%d",&n2);
-l=Ajouter_patient(l,cin);
-if(n1!=0)
-{
- for(i=1;i<=n1;i++)
- {
-  m=Ajouter_maladie(m,cin);
- }
- }
-if(n2!=0)
-{
-for(i=1;i<=n2;i++)
- {
-  p=Ajouter_personne(p,cin,co1);
-  do{
-printf("le nombre de maladie chronique ne depasse pas 3:");
-scanf("%d",&n3);
-}while(n3<0 || n3>3);
-  if(n3!=0)
-  {
-      for(t=1;t<=n3;t++)
- {
-  m=Ajouter_maladie(m,co1);
- }
-  }
-
- }
-}
-
-break;
-case 2: /*----------------------la case 2------------------------*/
-do
-{
-
-printf(" ____________MENU D'AFFICHAGE___________  \n");
-printf("|       1.AFFICHER SELON CIN            |\n");
-printf("|       2.AFFICHAGE SELON AGE ET GENRE  |\n");
-printf("|______________3.QUITTER________________|\n");
-printf("\n");
-printf("    Entrer un choix : ") ;
-scanf("%d",&choix1);
-system("cls");
-switch(choix1)
-{
-case 1:
-    printf("INSERER LA CIN DU PATIENT A AFFICHER:");
-fflush(stdin);
-scanf("%s",cin);
-c=affiche_patient(l,cin);
-c1=affiche_maladie(m,cin);
-c3=affiche_personne(p,cin);
-if(c==0)
-{
-    printf("PAS DE PATIENT AVEC CETTE CIN:%s",cin);
-    printf("\n");
-}
-else
+    int x;
+    for(;;)
     {
-    if(c1==0)
-    {
-      printf("PAS DE MALADIE CHRONIQUE POUR CE PATIENT");
-      printf("\n");
+        ui_champ(label);
+        x = lire_entier();
+        if(x >= min && x <= max)
+            return x;
+        ui_invalide(aide);
     }
-    else
-    {}
-        if(c3==0)
-    {
-      printf("PAS DE PERSONNES EN CONTACT AVEC CE PATIENT");
-      printf("\n");
-    }
-    else
-        {}
-    }
-
-break;
-case 2:
-    printf("INSERER L'AGE: ");
-    scanf("%d",&a);
-    do{
-    printf("INSERER LE GENRE HOMME (h) ET FEMME (f)");
-    rewind(stdin);
-    scanf("%c",&g);
-    }while(g!='h' && g!='f');
-    v1=affiche_ageetgenre(l,g,a);
-    if(v1==0)
-    {
-      printf("AUCUN PATIENT AVEC L'AGE:%d ET LE GENRE:%c",a,g);
-      printf("\n");
-    }
-    break;
-case 3:/*----------------------la case 8------------------------*/
-    printf("\n");
-         break;
-
-default:/*----------------------DEFAULT------------------------*/
-     printf("\n CHOISIR ENTRE 1 ET 2\n");
-     printf("\n");
-  break;
 }
 
-}
-while(choix1!=3);
-   break;
-case 3:/*----------------------la case 3------------------------*/
- h=Ajouter_hotel(h);
- break;
-case 4:/*----------------------la case 4------------------------*/
-    h=nombre_dispo(p,h);
-    c4=affiche_hotel(h);
-    if(c4==0)
+int main(void)
 {
-    printf("PAS D'HOTEL DISPONIBLE");
-    printf("\n");
+    patient l = NULL;
+    maladie m = NULL;
+    personne p = NULL;
+    hotel h = NULL;
+    char cin[25];
+    char co1[25];
+    char g;
+    int n1, n2, n3, i, t, a, avant;
+    int choix, choix1;
+    int charges, erreurs;
 
-}
- break;
-case 5:/*----------------------la case 4------------------------*/
-    printf("INSERER LA CIN DU PATIENT A MODIFIER:");
-scanf("%s",cin);
-l=modification_etat(l,cin);
-affiche_patient(l,cin);
-l=supprimer_patient(l,co);
-m=supprimer_maladie(m,co);
-break;
-case 6:/*----------------------la case 6------------------------*/
-    h=nombre_dispo(p,h);
-    printf("INSERER LA CIN DE LA PERSONNE A TRANSFERER:");
-    scanf("%s",cin5);
-    p=transfere_personne123(p,h,cin5);
-    break;
-
-case 7:/*----------------------------------------------*/
-       printf("INSERER LA CIN DU PERSONNE A AFFICHER:");
-       fflush(stdin);
-       scanf("%s",cin);
-  c6=affiche_personneseul(p,cin);
-  c7=affiche_pmaladie(m,cin);
-  if(c6==0)
-  {
-      printf("PAS DE PERSONNE AVEC LE CIN:%s",cin);
-      printf("\n");
-  }
-  else{
-    if(c7==0)
+    ui_init();
+    charges = charger_donnees(&l, &m, &p, &h, &erreurs);
+    if(charges > 0)
+        snprintf(annonce, sizeof annonce, VERT "✓ Données de la dernière session rechargées (%d élément(s))." , charges);
+    if(erreurs > 0)
+        snprintf(annonce + strlen(annonce), sizeof annonce - strlen(annonce),
+                 RESET "\n   " JAUNE "i %d ligne(s) illisible(s) ignorée(s) dans le fichier.", erreurs);
+    do
     {
-        printf("PAS DE MALADIE POUR CETTE PERSONNE");
-         printf("\n");
-    }
+        ui_transition();
+        afficher_menu(l, p, h);
+        choix = lire_entier();
+        ui_transition();
+        switch(choix)
+        {
+        case 1:/*----------------------ajout d'un patient------------------------*/
+            ui_titre("NOUVEAU PATIENT");
+            ui_section("IDENTITÉ");
+            for(;;)
+            {
+                ui_champ("CIN          ");
+                lire_cin(cin, sizeof cin);
+                if(!patient_existe(l, cin))
+                    break;
+                ui_invalide("un patient avec cette CIN existe déjà");
+            }
+            avant = compter_patients(l);
+            l = Ajouter_patient(l, cin);
+            if(compter_patients(l) == avant)
+                break;      /* plus de memoire */
 
-  }
-   break;
+            ui_section("MALADIES CHRONIQUES");
+            n1 = demander("Combien ? (0 à 3)", 0, 3, "entre 0 et 3");
+            for(i = 1; i <= n1; i++)
+                m = Ajouter_maladie(m, cin);
 
-case 8:/*----------------------la case 8------------------------*/
+            ui_section("PERSONNES EN CONTACT");
+            n2 = demander("Combien ?", 0, 50, "entre 0 et 50");
+            for(i = 1; i <= n2; i++)
+            {
+                ui_section("CONTACT %d / %d", i, n2);
+                p = Ajouter_personne(p, cin, co1);
+                if(co1[0] == '\0')
+                    break;          /* plus de memoire */
+                n3 = demander("Maladies chroniques (0 à 3)", 0, 3, "entre 0 et 3");
+                for(t = 1; t <= n3; t++)
+                    m = Ajouter_maladie(m, co1);
+            }
+            ui_ok("Patient %s enregistré : %d maladie(s), %d contact(s).", cin, n1, n2);
+            break;
 
-   c5=affiche_confinement(p);
-   if(c5==0)
-   {
-     printf("AUCUNE PERSONNE EN CONFINEMENT");
-   }
-         break;
+        case 2: /*----------------------affichage------------------------*/
+            do
+            {
+                ui_transition();
+                ui_titre("AFFICHAGE DES PATIENTS");
+                printf("\n");
+                ui_item(1, "Rechercher un patient par CIN");
+                ui_item(2, "Filtrer par âge et genre");
+                ui_item(3, "Retour au menu principal");
+                printf("\n");
+                ui_champ("Votre choix");
+                choix1 = lire_entier();
+                ui_transition();
+                switch(choix1)
+                {
+                case 1:
+                    ui_titre("FICHE PATIENT");
+                    printf("\n");
+                    ui_champ("CIN du patient");
+                    lire_cin(cin, sizeof cin);
+                    if(affiche_patient(l, cin) == 0)
+                        ui_erreur("Aucun patient avec la CIN %s.", cin);
+                    else
+                    {
+                        affiche_maladie(m, cin);
+                        affiche_personne(p, cin);
+                    }
+                    ui_pause();
+                    break;
+                case 2:
+                    ui_titre("PATIENTS PAR ÂGE ET GENRE");
+                    printf("\n");
+                    a = demander("Âge        ", 0, 130, "entre 0 et 130");
+                    do{
+                        ui_champ("Genre (h/f)");
+                        g = lire_caractere();
+                        if(g != 'h' && g != 'f')
+                            ui_invalide("tapez h ou f");
+                    }while(g != 'h' && g != 'f');
+                    if(affiche_ageetgenre(l, g, a) == 0)
+                        ui_info("Aucun patient de %d ans (%s).", a, g == 'h' ? "homme" : "femme");
+                    ui_pause();
+                    break;
+                case 3:
+                    break;
+                default:
+                    ui_erreur("Choix invalide : tapez 1, 2 ou 3.");
+                    ui_pause();
+                    break;
+                }
+            }while(choix1 != 3);
+            break;
 
-case 9:/*----------------------la case 9------------------------*/
-       printf("INSERER LA CIN DU PATIENT A MODIFIER:");
-scanf("%s",cin3);
-p=modification_etatperso(p,cin3);
-affiche_personneseul(p,cin3);
-p=supprimer_personne(p,co);
-m=supprimer_maladie(m,co);
-         break;
+        case 3:/*----------------------ajout d'un hotel------------------------*/
+            ui_titre("NOUVEL HÔTEL");
+            printf("\n");
+            h = Ajouter_hotel(h);
+            break;
 
-case 10:/*----------------------la case 10------------------------*/
-    printf("------------------------MERCI---------------------");
-    printf("\n");
-         break;
+        case 4:/*----------------------affichage des hotels------------------------*/
+            ui_titre("HÔTELS DE CONFINEMENT");
+            h = nombre_dispo(p, h);
+            if(affiche_hotel(h) == 0)
+                ui_info("Aucun hôtel enregistré. Utilisez le choix 3 pour en ajouter.");
+            break;
 
-default:/*----------------------DEFAULT------------------------*/
-     printf("\n les choix entre 1 et 10\n");
-     printf("\n");
-  break;
+        case 5:/*----------------------modification etat patient------------------------*/
+            ui_titre("MODIFIER L'ÉTAT D'UN PATIENT");
+            printf("\n");
+            ui_champ("CIN du patient");
+            lire_cin(cin, sizeof cin);
+            printf("\n");
+            l = modification_etat(l, cin);
+            /* les patients gueris ou morts sont supprimes avec leurs maladies */
+            avant = compter_patients(l);
+            l = supprimer_patient(l, &m);
+            if(compter_patients(l) < avant)
+                ui_info("Patient guéri ou décédé : sa fiche et ses maladies ont été retirées.");
+            break;
+
+        case 6:/*----------------------transfert en confinement------------------------*/
+            ui_titre("TRANSFERT EN CONFINEMENT");
+            h = nombre_dispo(p, h);
+            if(h == NULL)
+            {
+                ui_erreur("Aucun hôtel enregistré. Ajoutez-en un avec le choix 3.");
+                break;
+            }
+            if(affiche_transferables(p, h) == 0)
+            {
+                if(p == NULL)
+                    ui_info("Aucune personne contact enregistrée. Les contacts se saisissent "
+                            "avec le patient (choix 1, « Personnes en contact »).");
+                else
+                    ui_info("Toutes les personnes contact sont déjà en confinement.");
+                break;
+            }
+            ui_champ("CIN de la personne");
+            lire_cin(cin, sizeof cin);
+            if(!personne_existe(p, cin) && patient_existe(l, cin))
+            {
+                ui_erreur("%s est la CIN d'un patient, pas d'une personne contact.", cin);
+                printf("    " GRIS "Seules les personnes du tableau vont en confinement." RESET "\n");
+            }
+            else
+                p = transfere_personne123(p, h, cin);
+            break;
+
+        case 7:/*----------------------affichage d'une personne------------------------*/
+            ui_titre("FICHE PERSONNE CONTACT");
+            printf("\n");
+            ui_champ("CIN de la personne");
+            lire_cin(cin, sizeof cin);
+            if(affiche_personneseul(p, cin) == 0)
+                ui_erreur("Aucune personne contact avec la CIN %s.", cin);
+            else
+                affiche_maladie(m, cin);
+            break;
+
+        case 8:/*----------------------personnes en confinement------------------------*/
+            ui_titre("PERSONNES EN CONFINEMENT");
+            if(affiche_confinement(p) == 0)
+                ui_info("Aucune personne en confinement.");
+            break;
+
+        case 9:/*----------------------modification etat personne------------------------*/
+            ui_titre("MODIFIER L'ÉTAT D'UNE PERSONNE");
+            printf("\n");
+            ui_champ("CIN de la personne");
+            lire_cin(cin, sizeof cin);
+            printf("\n");
+            p = modification_etatperso(p, cin);
+            /* les personnes gueries ou mortes sont supprimees avec leurs maladies */
+            avant = compter_personnes(p);
+            p = supprimer_personne(p, &m);
+            if(compter_personnes(p) < avant)
+                ui_info("Personne guérie ou décédée : sa fiche et ses maladies ont été retirées.");
+            break;
+
+        case 10:
+            ui_titre("À BIENTÔT");
+            if(sauvegarder_donnees(l, m, p, h))
+                ui_ok("Données sauvegardées dans %s.", fichier_donnees());
+            else
+                ui_erreur("Impossible d'écrire %s.", fichier_donnees());
+            ui_ok("Merci d'avoir utilisé Gestion Corona.");
+            printf("\n");
+            break;
+
+        default:
+            ui_erreur("Choix invalide : tapez un nombre entre 1 et 10.");
+            break;
+        }
+        /* sauvegarde automatique après chaque modification */
+        if(choix == 1 || choix == 3 || choix == 5 || choix == 6 || choix == 9)
+        {
+            if(!sauvegarder_donnees(l, m, p, h))
+                snprintf(annonce, sizeof annonce, ROUGE "× Impossible d'écrire %s : les dernières "
+                         "modifications ne sont pas sauvegardées.", nom_court(fichier_donnees()));
+        }
+        if(choix != 2 && choix != 10)
+            ui_pause();
+    }while(choix != 10);
+
+    return 0;
 }
-
-}
-while(choix!=10);
-
-
-return 0;
-}
-
-/*----------------------------------------------------------------------*/
-
-
-
-
-
-
-
-
